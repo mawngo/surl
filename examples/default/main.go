@@ -15,7 +15,7 @@ func main() {
 	signed, _ := signer.Sign("https://example.com/a/b/c?foo=bar", time.Now().Add(time.Hour))
 	fmt.Println(signed)
 	// Outputs something like:
-	// https://example.com/a/b/c?expiry=1667331055&foo=bar&signature=TGvxmRwpoAUt9YEIbeJ164lMYrzA2DBnYB9Lcy9m1T
+	// https://example.com/a/b/c?foo=bar&expiry=1753548646&signature=QgtNxB9MsXQagB6m6vDe2j2WbuOncCcJcI34ze4AJUQ
 
 	err := signer.Verify(signed)
 	if err != nil {
