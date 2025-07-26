@@ -209,6 +209,16 @@ func (s *Signer) Verify(signed string) error {
 	if s.compatLvl < VerifyCompatible {
 		return err
 	}
+
+	// We can safely return when the error is expired, as when it happened,
+	// the signature and expiry param must have been successfully extracted and decoded,
+	// which mean this is actually a valid formatted link.
+	//
+	// Use equal for speed, as the ErrExpired is always returned directly.
+	if err == ErrExpired {
+		return ErrExpired
+	}
+
 	// When compatible mode enabled, we re-verify the old way.
 	// This doubles the work.
 	return s.verifyCompat(u)
