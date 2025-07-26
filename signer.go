@@ -87,9 +87,20 @@ func (s *Signer) Sign(unsigned string, expiry time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	s.SignInto(u, expiry)
+	return u.String(), nil
+}
+
+// SignInto add signature into the url with the given lifespan.
+// Any modification to the url after signed will make it invalid,
+// except for:
+// - RawQuery when [WithSkipQuery] is enabled (removing signature and expiry still invalidates the url).
+// - Scheme when [WithSkipScheme] is enabled.
+func (s *Signer) SignInto(u *url.URL, expiry time.Time) {
 	if s.compatLvl >= SignVerifyCompatible {
 		// Create legacy sign.
-		return s.signCompat(u, strconv.FormatInt(expiry.Unix(), 10)), nil
+		s.signCompat(u, strconv.FormatInt(expiry.Unix(), 10))
+		return
 	}
 
 	encodedExpiry := s.encodeExpiry(expiry.Unix())
@@ -129,15 +140,14 @@ func (s *Signer) Sign(unsigned string, expiry time.Time) (string, error) {
 	}
 
 	u.RawQuery = q.String()
-	return u.String(), nil
 }
 
-// signCompat produce signed url in a compatible way with leg100/surl implementation default config.
+// signCompat add signature into this url in a compatible way with leg100/surl implementation default config.
 // - Use "expiry" and "signature" query param name.
 // - Use base 10 for expiry param.
 // - Sorted query params.
 // - Support skip query and skip scheme option.
-func (s *Signer) signCompat(u *url.URL, encodedExpiry string) string {
+func (s *Signer) signCompat(u *url.URL, encodedExpiry string) {
 	q := u.Query()
 	// Add expiry param.
 	q.Set("expiry", encodedExpiry)
@@ -159,7 +169,6 @@ func (s *Signer) signCompat(u *url.URL, encodedExpiry string) string {
 	}
 
 	u.RawQuery = q.Encode()
-	return u.String()
 }
 
 // computeSign compute the signature for given url.
@@ -205,6 +214,7 @@ func (s *Signer) Verify(signed string) error {
 	return s.verifyCompat(u)
 }
 
+// verify verifies the url.
 func (s *Signer) verify(u *url.URL) error {
 	rawQuery, encodedSig, encodedExpiry, err := s.extractSignatureAndExpiry(u)
 	if err != nil {
