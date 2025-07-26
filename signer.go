@@ -2,17 +2,25 @@ package surl
 
 import (
 	"crypto/subtle"
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
-	"fmt"
 	"hash"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/blake2b"
+)
+
+const (
+	defaultExpiryParam    = "expiry"
+	defaultSignatureParam = "signature"
+	defaultExpiryBase     = 10
 )
 
 var (
@@ -23,13 +31,6 @@ var (
 	ErrInvalidFormat = errors.New("invalid format")
 	// ErrExpired is returned when a signed URL has expired.
 	ErrExpired = errors.New("URL has expired")
-
-	// DefaultFormatter sets the default format for the query parameter to the
-	// query formatter.
-	DefaultFormatter = WithQueryFormatter()
-	// DefaultExpiryFormatter sets the default format for the expiry paramter to
-	// base10 (decimal)
-	DefaultExpiryFormatter = WithDecimalExpiry()
 )
 
 // Signer is capable of signing and verifying signed URLs with an expiry.
@@ -39,9 +40,15 @@ type Signer struct {
 	dirty  bool
 	prefix string
 
-	payloadOptions
-	formatter
-	intEncoding
+	skipQuery  bool
+	skipScheme bool
+
+	compatLvl         CompatLevel
+	expiryBase        int
+	expiryParam       string
+	expiryParamRaw    string
+	signatureParam    string
+	signatureParamRaw string
 }
 
 // New constructs a new signer, performing the one-off task of generating a
@@ -49,83 +56,29 @@ type Signer struct {
 // anything longer is truncated. Options alter the default format and behaviour
 // of signed URLs.
 func New(key []byte, opts ...Option) *Signer {
-	hash, err := blake2b.New256(key)
+	h, err := blake2b.New256(key)
 	if err != nil {
 		// Safely ignore one and only error regarding keys longer than 64 bytes.
-		hash, _ = blake2b.New256(key[0:64])
+		h, _ = blake2b.New256(key[0:64])
 	}
 	s := &Signer{
-		hash: hash,
+		hash:           h,
+		expiryBase:     defaultExpiryBase,
+		expiryParam:    defaultExpiryParam,
+		signatureParam: defaultSignatureParam,
 	}
-	DefaultFormatter(s)
-	DefaultExpiryFormatter(s)
 
 	// Leave caller options til last so that they override defaults.
-	for _, o := range opts {
-		o(s)
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(s)
 	}
 
+	s.expiryParamRaw = "&" + s.expiryParam + "="
+	s.signatureParamRaw = "&" + s.signatureParam + "="
 	return s
-}
-
-// Option permits customising the construction of a Signer
-type Option func(*Signer)
-
-// SkipQuery instructs Signer to skip the query string when computing the
-// signature. This is useful, say, if you have pagination query parameters but
-// you want to use the same signed URL regardless of their value.
-func SkipQuery() Option {
-	return func(s *Signer) {
-		s.skipQuery = true
-	}
-}
-
-// SkipScheme instructs Signer to skip the scheme when computing the signature.
-// This is useful, say, if you generate signed URLs in production where you use
-// https but you want to use these URLs in development too where you use http.
-func SkipScheme() Option {
-	return func(s *Signer) {
-		s.skipScheme = true
-	}
-}
-
-// PrefixPath prefixes the signed URL's path with a string. This can make it easier for a server
-// to differentiate between signed and non-signed URLs. Note: the prefix is not
-// part of the signature computation.
-func PrefixPath(prefix string) Option {
-	return func(s *Signer) {
-		s.prefix = prefix
-	}
-}
-
-// WithQueryFormatter instructs Signer to use query parameters to store the signature
-// and expiry in a signed URL.
-func WithQueryFormatter() Option {
-	return func(s *Signer) {
-		s.formatter = &queryFormatter{}
-	}
-}
-
-// WithPathFormatter instructs Signer to store the signature and expiry in the
-// path of a signed URL.
-func WithPathFormatter() Option {
-	return func(s *Signer) {
-		s.formatter = &pathFormatter{}
-	}
-}
-
-// WithDecimalExpiry instructs Signer to use base10 to encode the expiry
-func WithDecimalExpiry() Option {
-	return func(s *Signer) {
-		s.intEncoding = stdIntEncoding(10)
-	}
-}
-
-// WithBase58Expiry instructs Signer to use base58 to encode the expiry
-func WithBase58Expiry() Option {
-	return func(s *Signer) {
-		s.intEncoding = &base58Encoding{}
-	}
 }
 
 // Sign generates a signed URL with the given lifespan.
@@ -134,31 +87,100 @@ func (s *Signer) Sign(unsigned string, expiry time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if s.compatLvl >= SignVerifyCompatible {
+		// Create legacy sign.
+		return s.signCompat(u, strconv.FormatInt(expiry.Unix(), 10)), nil
+	}
 
-	// Add expiry to unsigned URL
-	encodedExpiry := s.Encode(expiry.Unix())
-	s.addExpiry(u, encodedExpiry)
+	encodedExpiry := s.encodeExpiry(expiry.Unix())
+	// Use string builder to modify the raw query is more efficient, as we only append query param, not modifying
+	// or reading any.
+	// However, this introduces breaking change, as the old behaviour using url.Values.Encode(),
+	// which actually re-orders the query param.
+	var q strings.Builder
+	q.Grow(len(u.RawQuery) + len(s.expiryParamRaw) + len(encodedExpiry))
+	q.WriteString(u.RawQuery)
 
-	// Build payload for signature computation
-	payload := s.buildPayload(*u, s.payloadOptions)
+	// Add expiry param.
+	if u.RawQuery != "" {
+		q.WriteString(s.expiryParamRaw)
+	} else {
+		// Does not have '&' if it is the only param.
+		q.WriteString(s.expiryParam)
+		q.WriteRune('=')
+	}
+	q.WriteString(encodedExpiry)
 
-	// Sign payload creating a signature
-	sig := s.sign([]byte(payload))
-
-	// Add signature to url
-	encodedSig := base64.RawURLEncoding.EncodeToString(sig)
-	s.addSignature(u, encodedSig)
+	var rawQuery string
+	if s.skipQuery {
+		rawQuery = s.expiryParam + "=" + encodedExpiry
+	} else {
+		rawQuery = q.String()
+	}
+	// Add sign param.
+	sign := s.computeSign(*u, rawQuery)
+	encodedSign := base64.RawURLEncoding.EncodeToString(sign)
+	q.Grow(len(s.signatureParamRaw) + len(encodedSign))
+	q.WriteString(s.signatureParamRaw)
+	q.WriteString(encodedSign)
 
 	if s.prefix != "" {
 		u.Path = path.Join(s.prefix, u.Path)
 	}
 
-	// return signed URL
+	u.RawQuery = q.String()
 	return u.String(), nil
 }
 
-// Verify verifies a signed URL, validating its signature and ensuring it is
-// unexpired.
+// signCompat produce signed url in a compatible way with leg100/surl implementation default config.
+// - Use "expiry" and "signature" query param name.
+// - Use base 10 for expiry param.
+// - Sorted query params.
+// - Support skip query and skip scheme option.
+func (s *Signer) signCompat(u *url.URL, encodedExpiry string) string {
+	q := u.Query()
+	// Add expiry param.
+	q.Set("expiry", encodedExpiry)
+
+	var rawQuery string
+	if s.skipQuery {
+		rawQuery = "expiry=" + encodedExpiry
+	} else {
+		rawQuery = q.Encode()
+	}
+	// Add sign param.
+	sign := s.computeSign(*u, rawQuery)
+
+	encodedSign := base64.RawURLEncoding.EncodeToString(sign)
+	q.Set("signature", encodedSign)
+
+	if s.prefix != "" {
+		u.Path = path.Join(s.prefix, u.Path)
+	}
+
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// computeSign compute the signature for given url.
+func (s *Signer) computeSign(u url.URL, rawQuery string) []byte {
+	if s.skipScheme {
+		u.Scheme = ""
+	}
+	u.RawQuery = rawQuery
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.dirty {
+		s.hash.Reset()
+	}
+	s.dirty = true
+	s.hash.Write([]byte(u.String()))
+	return s.hash.Sum(nil)
+}
+
+// Verify verifies a signed URL, validating its signature and ensuring it is unexpired.
 func (s *Signer) Verify(signed string) error {
 	u, err := url.ParseRequestURI(signed)
 	if err != nil {
@@ -170,49 +192,180 @@ func (s *Signer) Verify(signed string) error {
 	}
 	u.Path = u.Path[len(s.prefix):]
 
-	encodedSig, err := s.extractSignature(u)
+	err = s.verify(u)
+	if err == nil {
+		return nil
+	}
+
+	if s.compatLvl < VerifyCompatible {
+		return err
+	}
+	// When compatible mode enabled, we re-verify the old way.
+	// This doubles the work.
+	return s.verifyCompat(u)
+}
+
+func (s *Signer) verify(u *url.URL) error {
+	rawQuery, encodedSig, encodedExpiry, err := s.extractSignatureAndExpiry(u)
 	if err != nil {
 		return err
 	}
+
 	sig, err := base64.RawURLEncoding.DecodeString(encodedSig)
 	if err != nil {
-		return fmt.Errorf("%w: invalid base64: %s", ErrInvalidSignature, encodedSig)
+		return errors.Join(ErrInvalidSignature, err)
 	}
 
-	// build the payload for signature computation
-	payload := s.buildPayload(*u, s.payloadOptions)
+	expiry, err := s.decodeExpiry(encodedExpiry)
+	if err != nil {
+		return errors.Join(ErrInvalidFormat, err)
+	}
 
-	// create another signature for comparison and compare
-	compare := s.sign([]byte(payload))
+	if time.Now().After(time.Unix(expiry, 0)) {
+		return ErrExpired
+	}
+
+	compare := s.computeSign(*u, rawQuery)
+	// Verify the computeSign.
 	if subtle.ConstantTimeCompare(sig, compare) != 1 {
 		return ErrInvalidSignature
 	}
+	return nil
+}
 
-	// get expiry from signed URL
-	encodedExpiry, err := s.extractExpiry(u)
-	if err != nil {
-		return err
+// extractSignatureAndExpiry extract the signature, and expiry from given url.
+// return the url without signature, encoded signature and encoded expiry.
+func (s *Signer) extractSignatureAndExpiry(u *url.URL) (string, string, string, error) {
+	if s.skipQuery {
+		// When skip query is enabled, we cannot use the trick bellow anymore,
+		// as user can reorder, changing the query parameter of this link.
+		q := u.Query()
+		encodedSig := q.Get(s.signatureParam)
+		if encodedSig == "" {
+			return "", "", "", ErrInvalidFormat
+		}
+		encodedExpiry := q.Get(s.expiryParam)
+		if encodedExpiry == "" {
+			return "", "", "", ErrInvalidFormat
+		}
+		return s.expiryParam + "=" + encodedExpiry, encodedSig, encodedExpiry, nil
 	}
-	expiry, err := s.Decode(encodedExpiry)
-	if err != nil {
-		return err
+
+	rawQuery := u.RawQuery
+	// Min length check.
+	// Actually, here we should check for len(defaultExpiryParam)+1 instead, because in the case of no query param,
+	// then the raw query will start with "defaultExpiryParam=" (without &).
+	// However, because those param always require some value, this validation is still correct.
+	if len(rawQuery) < len(s.expiryParamRaw)+len(s.signatureParamRaw) {
+		return "", "", "", ErrInvalidFormat
 	}
+
+	// Abuse the fact that signature always at the end of the url.
+	sigIndex := strings.LastIndex(rawQuery, s.signatureParamRaw)
+	if sigIndex < 0 {
+		return "", "", "", ErrInvalidFormat
+	}
+	encodedSig := rawQuery[sigIndex+len(s.signatureParamRaw):]
+
+	// Abuse the fact that expiry always come before signature.
+	var expIndex, expParamLen int
+	if rawQuery[len(s.expiryParam)] == '=' && strings.HasPrefix(rawQuery, s.expiryParam) {
+		// The signed url does not have any param, so the first param is s.expiryParam.
+		expIndex = 0
+		expParamLen = len(s.expiryParam) + 1
+	} else {
+		expIndex = strings.LastIndex(rawQuery[0:sigIndex], s.expiryParamRaw)
+		expParamLen = len(s.expiryParamRaw)
+	}
+
+	if expIndex < 0 {
+		return "", "", "", ErrInvalidFormat
+	}
+
+	rawQuery = rawQuery[0:sigIndex]
+	encodedExpiry := rawQuery[expIndex+expParamLen:]
+	return rawQuery, encodedSig, encodedExpiry, nil
+}
+
+// verifyCompat verify the url in a compatible way with leg100/surl implementation default config.
+// - Use "expiry" and "signature" query param name.
+// - Use base 10 for expiry param.
+// - Sorted query params.
+// - Support skip query and skip scheme option.
+func (s *Signer) verifyCompat(u *url.URL) error {
+	q := u.Query()
+	// Extract the signature from query.
+	encodedSig := q.Get("signature")
+	if encodedSig == "" {
+		return ErrInvalidFormat
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(encodedSig)
+	if err != nil {
+		return errors.Join(ErrInvalidSignature, err)
+	}
+	q.Del("signature")
+
+	// Get the expiry from query.
+	// No need to remove the expiry param, as it is included when generate signature.
+	encodedExpiry := q.Get("expiry")
+	if encodedExpiry == "" {
+		return ErrInvalidFormat
+	}
+	expiry, err := strconv.ParseInt(encodedExpiry, 10, 64)
+	if err != nil {
+		return errors.Join(ErrInvalidFormat, err)
+	}
+
 	if time.Now().After(time.Unix(expiry, 0)) {
 		return ErrExpired
+	}
+
+	var rawQuery string
+	if s.skipQuery {
+		rawQuery = "expiry=" + encodedExpiry
+	} else {
+		rawQuery = q.Encode()
+	}
+	// Verify the computeSign.
+	compare := s.computeSign(*u, rawQuery)
+	if subtle.ConstantTimeCompare(sig, compare) != 1 {
+		return ErrInvalidSignature
 	}
 
 	// valid, unexpired, signature
 	return nil
 }
 
-func (s *Signer) sign(data []byte) []byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.dirty {
-		s.hash.Reset()
+func (s *Signer) encodeExpiry(expiry int64) string {
+	switch s.expiryBase {
+	case 64:
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, uint64(expiry))
+		return base64.RawURLEncoding.EncodeToString(b)
+	case 32:
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, uint64(expiry))
+		return base32.StdEncoding.EncodeToString(b)
+	default:
+		return strconv.FormatInt(expiry, s.expiryBase)
 	}
-	s.dirty = true
-	s.hash.Write(data)
-	return s.hash.Sum(nil)
+}
+
+func (s *Signer) decodeExpiry(expiry string) (int64, error) {
+	switch s.expiryBase {
+	case 64:
+		bytes, err := base64.RawURLEncoding.DecodeString(expiry)
+		if err != nil {
+			return 0, err
+		}
+		return int64(binary.BigEndian.Uint64(bytes)), nil
+	case 32:
+		bytes, err := base32.StdEncoding.DecodeString(expiry)
+		if err != nil {
+			return 0, err
+		}
+		return int64(binary.BigEndian.Uint64(bytes)), nil
+	default:
+		return strconv.ParseInt(expiry, s.expiryBase, 64)
+	}
 }

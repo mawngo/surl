@@ -6,11 +6,11 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/leg100/surl/v2"
+	"github.com/mawngo/surl"
 )
 
 func main() {
-	signer := surl.New([]byte("secret_key"), surl.SkipScheme())
+	signer := surl.New([]byte("secret_key"), surl.WithSkipScheme())
 
 	// Create a signed URL that expires in one hour.
 	signed, _ := signer.Sign("https://example.com/a/b/c?page=1", time.Now().Add(time.Hour))

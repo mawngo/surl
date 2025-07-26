@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/leg100/surl/v2"
+	"github.com/mawngo/surl"
 )
 
 func main() {

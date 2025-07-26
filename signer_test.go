@@ -2,74 +2,93 @@ package surl
 
 import (
 	"crypto/rand"
+	"errors"
 	"net/url"
 	"path"
 	"testing"
 	"time"
 
+	leg100 "github.com/leg100/surl/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 var (
-	formatters = []struct {
-		name      string
-		formatter Option
+	compatModes = []struct {
+		name string
+		mode Option
 	}{
 		{
-			name:      "path",
-			formatter: WithPathFormatter(),
+			name: "query",
 		},
 		{
-			name:      "query",
-			formatter: WithQueryFormatter(),
+			name: "compat",
+			mode: WithCompatMode(VerifyCompatible),
+		},
+		{
+			name: "compat++",
+			mode: WithCompatMode(SignVerifyCompatible),
 		},
 	}
 
-	encoders = []struct {
-		name    string
-		encoder Option
+	bases = []struct {
+		name string
+		base Option
 	}{
 		{
-			name:    "decimal",
-			encoder: WithDecimalExpiry(),
+			name: "decimal",
 		},
 		{
-			name:    "base58",
-			encoder: WithBase58Expiry(),
+			name: "base32",
+			base: WithBase32Expiry(),
 		},
 	}
 
 	opts = []struct {
-		name    string
-		options []Option
+		name      string
+		options   []Option
+		compat    []leg100.Option
+		skipBench bool
 	}{
 		{
 			name: "no opts",
 		},
 		{
 			name:    "prefix",
-			options: []Option{PrefixPath("/signed")},
+			options: []Option{WithPrefixPath("/signed")},
+			compat:  []leg100.Option{leg100.PrefixPath("/signed")},
 		},
 		{
 			name:    "skip query",
-			options: []Option{SkipQuery()},
+			options: []Option{WithSkipQuery()},
+			compat:  []leg100.Option{leg100.SkipQuery()},
 		},
 		{
 			name:    "skip scheme",
-			options: []Option{SkipScheme()},
+			options: []Option{WithSkipScheme()},
+			compat:  []leg100.Option{leg100.SkipScheme()},
 		},
 		{
 			name:    "prefix and skip query",
-			options: []Option{SkipQuery(), PrefixPath("/signed")},
+			options: []Option{WithSkipQuery(), WithPrefixPath("/signed")},
+			compat:  []leg100.Option{leg100.SkipQuery(), leg100.PrefixPath("/signed")},
 		},
 		{
-			name:    "prefix and skip scheme",
-			options: []Option{SkipScheme(), PrefixPath("/signed")},
+			name:      "prefix and skip scheme",
+			options:   []Option{WithSkipScheme(), WithPrefixPath("/signed")},
+			compat:    []leg100.Option{leg100.SkipScheme(), leg100.PrefixPath("/signed")},
+			skipBench: true,
 		},
 		{
-			name:    "prefix and skip query and skip scheme",
-			options: []Option{SkipQuery(), SkipScheme(), PrefixPath("/signed")},
+			name:      "prefix and skip query and skip scheme",
+			options:   []Option{WithSkipQuery(), WithSkipScheme(), WithPrefixPath("/signed")},
+			compat:    []leg100.Option{leg100.SkipQuery(), leg100.SkipScheme(), leg100.PrefixPath("/signed")},
+			skipBench: true,
+		},
+		{
+			name:      "custom query param",
+			options:   []Option{WithSignatureParam("my_sig"), WithExpiryParam("my_exp")},
+			skipBench: true,
 		},
 	}
 )
@@ -79,6 +98,10 @@ func TestSigner(t *testing.T) {
 		name     string
 		unsigned string
 	}{
+		{
+			name:     "with query",
+			unsigned: "https://example.com/a/b/c?foo=bar",
+		},
 		{
 			name:     "with query",
 			unsigned: "https://example.com/a/b/c?foo=bar",
@@ -96,13 +119,13 @@ func TestSigner(t *testing.T) {
 			unsigned: "/a/b/c",
 		},
 	}
-	// invoke test for each combination of unsigned url, formatter, encoder, and set of
+	// invoke test for each combination of unsigned url, mode, base, and set of
 	// options
 	for _, tt := range inputs {
-		for _, f := range formatters {
-			for _, enc := range encoders {
+		for _, f := range compatModes {
+			for _, enc := range bases {
 				for _, opt := range opts {
-					options := append(opt.options, f.formatter, enc.encoder)
+					options := append([]Option{f.mode, enc.base}, opt.options...)
 					signer := New([]byte("abc123"), options...)
 
 					t.Run(path.Join(tt.name, f.name, enc.name, opt.name), func(t *testing.T) {
@@ -126,16 +149,16 @@ func TestSigner(t *testing.T) {
 func TestSigner_SkipQuery(t *testing.T) {
 	signer := New([]byte("abc123"))
 
-	// Demonstrate the SkipQuery option by changing the
+	// Demonstrate the WithSkipQuery option by changing the
 	// query string on the signed URL and showing it still verifies.
 	t.Run("skip query", func(t *testing.T) {
-		sign := New([]byte("abc123"), SkipQuery())
+		sign := New([]byte("abc123"), WithSkipQuery())
 
 		u := "https://example.com/a/b/c?foo=bar"
 		signed, err := sign.Sign(u, time.Now().Add(time.Minute))
 		require.NoError(t, err)
 
-		signed = signed + "&page_num=3&page_size=20"
+		signed += "&page_num=3&page_size=20"
 
 		err = sign.Verify(signed)
 		require.NoError(t, err)
@@ -153,18 +176,18 @@ func TestSigner_SkipQuery(t *testing.T) {
 		signed, err := signer.Sign(u, time.Now().Add(time.Minute))
 		require.NoError(t, err)
 
-		signed = signed + "&page_num=3&page_size=20"
+		signed += "&page_num=3&page_size=20"
 
 		err = signer.Verify(signed)
-		assert.Equal(t, ErrInvalidSignature, err)
+		assert.True(t, errors.Is(err, ErrInvalidSignature))
 	})
 }
 
 func TestSigner_SkipScheme(t *testing.T) {
-	// Demonstrate the SkipScheme option by changing the scheme on the signed
+	// Demonstrate the WithSkipScheme option by changing the scheme on the signed
 	// URL and showing it still verifies.
 	t.Run("skip scheme", func(t *testing.T) {
-		signer := New([]byte("abc123"), SkipScheme())
+		signer := New([]byte("abc123"), WithSkipScheme())
 
 		unsigned := "https://example.com/a/b/c?foo=bar"
 		signed, err := signer.Sign(unsigned, time.Now().Add(time.Minute))
@@ -191,16 +214,16 @@ func TestSigner_SkipScheme(t *testing.T) {
 		u.Scheme = "http"
 
 		err = signer.Verify(u.String())
-		assert.Equal(t, ErrInvalidSignature, err)
+		assert.True(t, errors.Is(err, ErrInvalidSignature))
 	})
 }
 
 func TestSigner_Prefix(t *testing.T) {
-	signer := New([]byte("abc123"), PrefixPath("/signed"))
+	signer := New([]byte("abc123"), WithPrefixPath("/signed"))
 
 	t.Run("invalid prefix", func(t *testing.T) {
 		err := signer.Verify("http://abc.com/wrongprefix/foo/bar?expiry=123&signature=fJLFKJ3903")
-		assert.Equal(t, ErrInvalidFormat, err)
+		assert.True(t, errors.Is(err, ErrInvalidFormat))
 	})
 }
 
@@ -261,6 +284,150 @@ func TestSigner_Errors(t *testing.T) {
 	})
 }
 
+func TestSignerCompat(t *testing.T) {
+	inputs := []struct {
+		name     string
+		unsigned string
+	}{
+		{
+			name:     "with query",
+			unsigned: "https://example.com/a/b/c?foo=bar",
+		},
+		{
+			name:     "with long query",
+			unsigned: "https://example.com/a/b/c?foo=bar&foo2=bazz&abc=xyz",
+		},
+		{
+			name:     "without query",
+			unsigned: "https://example.com/a/b/c",
+		},
+		{
+			name:     "with only question mark",
+			unsigned: "https://example.com/a/b/c?",
+		},
+		{
+			name:     "absolute path",
+			unsigned: "/a/b/c",
+		},
+	}
+	for _, tt := range inputs {
+		// Sign/verify compatible.
+		for _, enc := range bases {
+			for _, opt := range opts {
+				if len(opt.compat) == 0 {
+					continue
+				}
+
+				options := append([]Option{WithCompatMode(SignVerifyCompatible), enc.base}, opt.options...)
+				signer := New([]byte("abc123"), options...)
+				leg100Signer := leg100.New([]byte("abc123"), opt.compat...)
+
+				t.Run(path.Join(tt.name, "compat++ sign+leg100verify", enc.name, opt.name), func(t *testing.T) {
+					signed, err := signer.Sign(tt.unsigned, time.Now().Add(time.Second*10))
+					require.NoError(t, err)
+
+					// check valid URL
+					_, err = url.Parse(signed)
+					require.NoError(t, err)
+
+					// check valid signature
+					err = leg100Signer.Verify(signed)
+					require.NoError(t, err)
+				})
+
+				t.Run(path.Join(tt.name, "compat++ leg100sign+verify", enc.name, opt.name), func(t *testing.T) {
+					signed, err := leg100Signer.Sign(tt.unsigned, time.Now().Add(time.Second*10))
+					require.NoError(t, err)
+
+					// check valid URL
+					_, err = url.Parse(signed)
+					require.NoError(t, err)
+
+					// check valid signature
+					err = signer.Verify(signed)
+					require.NoError(t, err)
+				})
+			}
+		}
+
+		for _, enc := range bases {
+			for _, opt := range opts {
+				options := append([]Option{WithCompatMode(VerifyCompatible), enc.base}, opt.options...)
+				signer := New([]byte("abc123"), options...)
+				leg100Signer := leg100.New([]byte("abc123"), opt.compat...)
+
+				t.Run(path.Join(tt.name, "compat", enc.name, opt.name), func(t *testing.T) {
+					signed, err := leg100Signer.Sign(tt.unsigned, time.Now().Add(time.Second*10))
+					require.NoError(t, err)
+
+					// check valid URL
+					_, err = url.Parse(signed)
+					require.NoError(t, err)
+
+					// check valid signature
+					err = signer.Verify(signed)
+					require.NoError(t, err)
+				})
+			}
+		}
+	}
+}
+
+func TestSignerCompat_SkipQuery(t *testing.T) {
+	// Demonstrate the WithSkipQuery option by changing the
+	// query string on the signed URL and showing it still verifies.
+	t.Run("skip query", func(t *testing.T) {
+		sign := New([]byte("abc123"), WithSkipQuery(), WithCompatMode(SignVerifyCompatible))
+		leg100Sign := leg100.New([]byte("abc123"), leg100.SkipQuery())
+
+		u := "https://example.com/a/b/c?foo=bar"
+		signed, err := leg100Sign.Sign(u, time.Now().Add(time.Minute))
+		require.NoError(t, err)
+		signed += "&page_num=3&page_size=20"
+		err = sign.Verify(signed)
+		require.NoError(t, err)
+
+		signed, err = sign.Sign(u, time.Now().Add(time.Minute))
+		require.NoError(t, err)
+		signed += "&page_num=3&page_size=20"
+		err = leg100Sign.Verify(signed)
+		require.NoError(t, err)
+
+		t.Run("check original query parameters are intact", func(t *testing.T) {
+			u, err := url.Parse(signed)
+			require.NoError(t, err)
+			assert.Equal(t, "bar", u.Query().Get("foo"))
+		})
+	})
+}
+
+func TestSignerCompat_SkipScheme(t *testing.T) {
+	// Demonstrate the WithSkipScheme option by changing the scheme on the signed
+	// URL and showing it still verifies.
+	t.Run("skip scheme", func(t *testing.T) {
+		signer := New([]byte("abc123"), WithSkipScheme(), WithCompatMode(SignVerifyCompatible))
+		leg100Sign := leg100.New([]byte("abc123"), leg100.SkipScheme())
+
+		unsigned := "https://example.com/a/b/c?foo=bar"
+
+		signed, err := leg100Sign.Sign(unsigned, time.Now().Add(time.Minute))
+		require.NoError(t, err)
+		u, err := url.Parse(signed)
+		require.NoError(t, err)
+		u.Scheme = "http"
+		err = signer.Verify(u.String())
+		require.NoError(t, err)
+
+		signed, err = signer.Sign(unsigned, time.Now().Add(time.Minute))
+		require.NoError(t, err)
+		u, err = url.Parse(signed)
+		require.NoError(t, err)
+		u.Scheme = "https"
+		err = leg100Sign.Verify(u.String())
+		require.NoError(t, err)
+	})
+}
+
 var (
 	bu   string
 	berr error
@@ -271,12 +438,15 @@ func Benchmark(b *testing.B) {
 	_, err := rand.Read(secret)
 	require.NoError(b, err)
 
-	// invoke bench for each combination of formatter, encoder, and set of
+	// invoke bench for each combination of mode, base, and set of
 	// options
-	for _, f := range formatters {
-		for _, enc := range encoders {
+	for _, f := range compatModes {
+		for _, enc := range bases {
 			for _, opt := range opts {
-				options := append(opt.options, f.formatter, enc.encoder)
+				if opt.skipBench {
+					continue
+				}
+				options := append([]Option{f.mode, enc.base}, opt.options...)
 
 				b.Run(path.Join("sign", f.name, enc.name, opt.name), func(b *testing.B) {
 					signer := New(secret, options...)
