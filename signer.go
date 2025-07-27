@@ -35,11 +35,10 @@ var (
 
 // Signer is capable of signing and verifying signed URLs with an expiry.
 type Signer struct {
-	mu     sync.Mutex
-	hash   hash.Hash
-	dirty  bool
-	prefix string
+	mu   sync.Mutex
+	hash hash.Hash
 
+	prefix     string
 	skipQuery  bool
 	skipScheme bool
 
@@ -181,12 +180,10 @@ func (s *Signer) computeSign(u url.URL, rawQuery string) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.dirty {
-		s.hash.Reset()
-	}
-	s.dirty = true
 	s.hash.Write([]byte(u.String()))
-	return s.hash.Sum(nil)
+	sig := s.hash.Sum(nil)
+	s.hash.Reset()
+	return sig
 }
 
 // Verify verifies a signed URL, validating its signature and ensuring it is unexpired.
@@ -215,6 +212,7 @@ func (s *Signer) Verify(signed string) error {
 	// which mean this is actually a valid formatted link.
 	//
 	// Use equal for speed, as the ErrExpired is always returned directly.
+	// nolint:errorlint
 	if err == ErrExpired {
 		return ErrExpired
 	}
@@ -357,35 +355,21 @@ func (s *Signer) verifyCompat(u *url.URL) error {
 }
 
 func (s *Signer) encodeExpiry(expiry int64) string {
-	switch s.expiryBase {
-	case 64:
-		b := make([]byte, 8)
-		binary.BigEndian.PutUint64(b, uint64(expiry))
-		return base64.RawURLEncoding.EncodeToString(b)
-	case 32:
+	if s.expiryBase == 32 {
 		b := make([]byte, 8)
 		binary.BigEndian.PutUint64(b, uint64(expiry))
 		return base32.StdEncoding.EncodeToString(b)
-	default:
-		return strconv.FormatInt(expiry, s.expiryBase)
 	}
+	return strconv.FormatInt(expiry, s.expiryBase)
 }
 
 func (s *Signer) decodeExpiry(expiry string) (int64, error) {
-	switch s.expiryBase {
-	case 64:
-		bytes, err := base64.RawURLEncoding.DecodeString(expiry)
-		if err != nil {
-			return 0, err
-		}
-		return int64(binary.BigEndian.Uint64(bytes)), nil
-	case 32:
+	if s.expiryBase == 32 {
 		bytes, err := base32.StdEncoding.DecodeString(expiry)
 		if err != nil {
 			return 0, err
 		}
 		return int64(binary.BigEndian.Uint64(bytes)), nil
-	default:
-		return strconv.ParseInt(expiry, s.expiryBase, 64)
 	}
+	return strconv.ParseInt(expiry, s.expiryBase, 64)
 }
