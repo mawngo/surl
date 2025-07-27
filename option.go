@@ -80,3 +80,13 @@ func WithExpiryParam(name string) Option {
 		signer.expiryParam = name
 	}
 }
+
+// WithDisableHashPool disable the hash pool used for generating signature,
+// which is enabled by default.
+//
+// Using pool greatly improving performance in high concurrency scenario.
+func WithDisableHashPool() Option {
+	return func(signer *Signer) {
+		signer.disabledPool = true
+	}
+}

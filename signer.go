@@ -35,8 +35,10 @@ var (
 
 // Signer is capable of signing and verifying signed URLs with an expiry.
 type Signer struct {
-	mu   sync.Mutex
-	hash hash.Hash
+	mu           sync.Mutex
+	hash         hash.Hash
+	pool         sync.Pool
+	disabledPool bool
 
 	prefix     string
 	skipQuery  bool
@@ -55,13 +57,16 @@ type Signer struct {
 // anything longer is truncated. Options alter the default format and behaviour
 // of signed URLs.
 func New(key []byte, opts ...Option) *Signer {
-	h, err := blake2b.New256(key)
-	if err != nil {
-		// Safely ignore one and only error regarding keys longer than 64 bytes.
-		h, _ = blake2b.New256(key[0:64])
-	}
+	key = key[0:min(64, len(key))]
+	h, _ := blake2b.New256(key)
 	s := &Signer{
-		hash:           h,
+		hash: h,
+		pool: sync.Pool{
+			New: func() any {
+				h, _ := blake2b.New256(key)
+				return h
+			},
+		},
 		expiryBase:     defaultExpiryBase,
 		expiryParam:    defaultExpiryParam,
 		signatureParam: defaultSignatureParam,
@@ -177,12 +182,20 @@ func (s *Signer) computeSign(u url.URL, rawQuery string) []byte {
 	}
 	u.RawQuery = rawQuery
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.disabledPool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.hash.Write([]byte(u.String()))
+		sig := s.hash.Sum(nil)
+		s.hash.Reset()
+		return sig
+	}
 
-	s.hash.Write([]byte(u.String()))
-	sig := s.hash.Sum(nil)
-	s.hash.Reset()
+	h := s.pool.Get().(hash.Hash)
+	h.Write([]byte(u.String()))
+	sig := h.Sum(nil)
+	h.Reset()
+	s.pool.Put(h)
 	return sig
 }
 
