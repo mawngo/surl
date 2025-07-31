@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"golang.org/x/crypto/blake2b"
 	"hash"
 	"net/url"
 	"path"
@@ -13,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/blake2b"
 )
 
 const (
@@ -64,6 +63,14 @@ func New(key []byte, opts ...Option) *Signer {
 		signatureParam: defaultSignatureParam,
 	}
 
+	// Leave caller options til last so that they override defaults.
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(s)
+	}
+
 	if s.disabledPool {
 		h, _ := blake2b.New256(key)
 		s.hash = h
@@ -74,14 +81,6 @@ func New(key []byte, opts ...Option) *Signer {
 				return h
 			},
 		}
-	}
-
-	// Leave caller options til last so that they override defaults.
-	for _, opt := range opts {
-		if opt == nil {
-			continue
-		}
-		opt(s)
 	}
 
 	s.expiryParamRaw = "&" + s.expiryParam + "="
