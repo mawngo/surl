@@ -58,18 +58,22 @@ type Signer struct {
 // of signed URLs.
 func New(key []byte, opts ...Option) *Signer {
 	key = key[0:min(64, len(key))]
-	h, _ := blake2b.New256(key)
 	s := &Signer{
-		hash: h,
-		pool: sync.Pool{
+		expiryBase:     defaultExpiryBase,
+		expiryParam:    defaultExpiryParam,
+		signatureParam: defaultSignatureParam,
+	}
+
+	if s.disabledPool {
+		h, _ := blake2b.New256(key)
+		s.hash = h
+	} else {
+		s.pool = sync.Pool{
 			New: func() any {
 				h, _ := blake2b.New256(key)
 				return h
 			},
-		},
-		expiryBase:     defaultExpiryBase,
-		expiryParam:    defaultExpiryParam,
-		signatureParam: defaultSignatureParam,
+		}
 	}
 
 	// Leave caller options til last so that they override defaults.

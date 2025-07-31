@@ -85,6 +85,7 @@ func WithExpiryParam(name string) Option {
 // which is enabled by default.
 //
 // Using pool greatly improving performance in high concurrency scenario.
+// Deprecated.
 func WithDisableHashPool() Option {
 	return func(signer *Signer) {
 		signer.disabledPool = true
