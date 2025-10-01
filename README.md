@@ -9,7 +9,7 @@ What's changed:
 - ! Remove support for base58 expiry.
 - ! Remove support for path formatter, only support query formatter.
 - ! All `Option` now have `With` prefix.
-- ! Optimized query format ter logic, this results in incompatible link format between this fork and
+- ! Optimized query formatter logic, this results in incompatible link format between this fork and
   original `leg100/surl` implementation.
 - Support for changing expiry and signature query parameter name.
 
