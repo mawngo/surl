@@ -8,6 +8,7 @@ import (
 	"errors"
 	"golang.org/x/crypto/blake2b"
 	"hash"
+	"log/slog"
 	"net/url"
 	"path"
 	"strconv"
@@ -34,10 +35,7 @@ var (
 
 // Signer is capable of signing and verifying signed URLs with an expiry.
 type Signer struct {
-	mu           sync.Mutex
-	hash         hash.Hash
-	pool         sync.Pool
-	disabledPool bool
+	pool sync.Pool
 
 	prefix     string
 	skipQuery  bool
@@ -53,7 +51,7 @@ type Signer struct {
 
 // New constructs a new signer, performing the one-off task of generating a
 // secure hash from the key. The key must be between 0 and 64 bytes long;
-// anything longer is truncated. Options alter the default format and behaviour
+// anything longer is truncated. Options alter the default format and behavior
 // of signed URLs.
 func New(key []byte, opts ...Option) *Signer {
 	key = key[0:min(64, len(key))]
@@ -71,16 +69,15 @@ func New(key []byte, opts ...Option) *Signer {
 		opt(s)
 	}
 
-	if s.disabledPool {
-		h, _ := blake2b.New256(key)
-		s.hash = h
-	} else {
-		s.pool = sync.Pool{
-			New: func() any {
-				h, _ := blake2b.New256(key)
-				return h
-			},
-		}
+	s.pool = sync.Pool{
+		New: func() any {
+			h, err := blake2b.New256(key)
+			if err != nil {
+				slog.Error("Error creating hash for signing")
+				panic(err)
+			}
+			return h
+		},
 	}
 
 	s.expiryParamRaw = "&" + s.expiryParam + "="
@@ -184,15 +181,6 @@ func (s *Signer) computeSign(u url.URL, rawQuery string) []byte {
 		u.Scheme = ""
 	}
 	u.RawQuery = rawQuery
-
-	if s.disabledPool {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.hash.Write([]byte(u.String()))
-		sig := s.hash.Sum(nil)
-		s.hash.Reset()
-		return sig
-	}
 
 	h := s.pool.Get().(hash.Hash)
 	h.Write([]byte(u.String()))

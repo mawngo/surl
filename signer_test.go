@@ -23,10 +23,6 @@ var (
 			name: "query",
 		},
 		{
-			name: "unpool",
-			mode: WithDisableHashPool(),
-		},
-		{
 			name: "compat",
 			mode: WithCompatMode(VerifyCompatible),
 		},
@@ -484,22 +480,6 @@ func Benchmark(b *testing.B) {
 func BenchmarkConcurrent(b *testing.B) {
 	b.Run("sign", func(b *testing.B) {
 		signer := New([]byte("abc123"))
-		var wg sync.WaitGroup
-		for b.Loop() {
-			for i := 0; i < 500; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					u, _ := signer.Sign("https://example.com/a/b/c?x=1&y=2&z=3", time.Now().Add(time.Hour))
-					bu = u
-				}()
-			}
-			wg.Wait()
-		}
-	})
-
-	b.Run("sign unpool", func(b *testing.B) {
-		signer := New([]byte("abc123"), WithDisableHashPool())
 		var wg sync.WaitGroup
 		for b.Loop() {
 			for i := 0; i < 500; i++ {

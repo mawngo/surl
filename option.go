@@ -81,13 +81,12 @@ func WithExpiryParam(name string) Option {
 	}
 }
 
-// WithDisableHashPool disable the hash pool used for generating signature,
-// which is enabled by default.
-//
+// WithDisableHashPool disable the hash pool used for generating signature.
 // Using pool greatly improving performance in high concurrency scenario.
+//
 // Deprecated.
+// Pooling hash is now mandatory, this option has no effect and will be removed in the future.
 func WithDisableHashPool() Option {
 	return func(signer *Signer) {
-		signer.disabledPool = true
 	}
 }
