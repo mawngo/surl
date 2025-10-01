@@ -96,10 +96,10 @@ func (s *Signer) Sign(unsigned string, expiry time.Time) (string, error) {
 }
 
 // SignInto add signature into the url with the given lifespan.
-// Any modification to the url after signed will make it invalid,
-// except for:
-// - RawQuery when [WithSkipQuery] is enabled (removing signature and expiry still invalidates the url).
-// - Scheme when [WithSkipScheme] is enabled.
+//
+// Any modification to the url after signed will make it invalid, except for:
+//   - RawQuery when [WithSkipQuery] is enabled (removing signature and expiry still invalidates the url).
+//   - Scheme when [WithSkipScheme] is enabled.
 func (s *Signer) SignInto(u *url.URL, expiry time.Time) {
 	if s.compatLvl >= SignVerifyCompatible {
 		// Create legacy sign.

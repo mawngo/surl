@@ -14,7 +14,7 @@ const (
 	SignVerifyCompatible = 2
 )
 
-// Option permits customising the construction of a Signer.
+// Option permits customizing the construction of a Signer.
 type Option func(*Signer)
 
 // WithSkipQuery instructs Signer to skip the query string when computing the
@@ -35,9 +35,9 @@ func WithSkipScheme() Option {
 	}
 }
 
-// WithPrefixPath prefixes the signed URL's path with a string. This can make it easier for a server
-// to differentiate between signed and non-signed URLs. Note: the prefix is not
-// part of the signature computation.
+// WithPrefixPath prefixes the signed URL's path with a string.
+// This can make it easier for a server to differentiate between signed and non-signed URLs.
+// Note: the prefix is not part of the signature computation.
 func WithPrefixPath(prefix string) Option {
 	return func(s *Signer) {
 		s.prefix = prefix
@@ -58,7 +58,7 @@ func WithBase32Expiry() Option {
 	}
 }
 
-// WithCompatMode configure compatibility behaviour between [Signer] and leg100/surl.
+// WithCompatMode configure compatibility behavior between [Signer] and leg100/surl.
 func WithCompatMode(mode CompatLevel) Option {
 	return func(s *Signer) {
 		s.compatLvl = mode
