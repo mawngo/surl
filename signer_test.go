@@ -482,7 +482,7 @@ func BenchmarkConcurrent(b *testing.B) {
 		signer := New([]byte("abc123"))
 		var wg sync.WaitGroup
 		for b.Loop() {
-			for i := 0; i < 500; i++ {
+			for range 500 {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
